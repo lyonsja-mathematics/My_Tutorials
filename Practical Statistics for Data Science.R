@@ -1,68 +1,112 @@
-library(reshape2)
 library(ggplot2)
 library(dplyr)
 library(mclust)
 library(pwr)
 library(tidyr)
 
-# Import data
+plt_theme_1 = theme(panel.background = element_blank(), text = element_text(size=18), axis.line = element_line(size = 2), panel.grid = element_line(size=1, color="lightgrey"))
+
+###########################################################################
+######################## Import data frames ###############################
+###########################################################################
+
 session_times=read.csv("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/web_page_data.csv?raw=TRUE") %>% mutate(Time=60*Time); head(session_times)
 
-lung=read.csv("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/LungDisease.csv?raw=TRUE") %>% sample_n(1e4)
-
-house=read.csv("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/house_sales.csv?raw=TRUE", sep = "\t") %>% sample_n(1e4)
-
-loan_data=data.table::fread("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/loan_data.csv.gz?raw=TRUE") %>% sample_n(1e4) %>% select(-1) %>% mutate(outcome=factor(outcome)) %>% as.data.frame()
-
-sp500=data.table::fread("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/sp500_data.csv.gz?raw=TRUE") %>% as.data.frame(); View(head(sp500,10))
-
-sp500_sectors=read.csv("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/sp500_sectors.csv?raw=TRUE"); View(head(sp500_sectors))
-
-dbinom(x=0, size=200, p=0.02)
-pbinom(q = 5, size = 2e2, prob = 2e-2)
-rpois(n = 100, lambda = 2)
-
 # Student's t-test
+# The t-test is used to test statistical significance when we have a data frame with a column of categorical data and a column of numerical data.
+# Use alternative="less" to test the alternative hypothesis that the difference in means for group A and group B is less than 0. The mean of group A could be less than the mean of group B but that doesn't mean that the difference is statistically significant. A p-value of 0.141 mean that in 14.1 % of cases the mean difference of random permutations exceeds the observed difference. If the p-value > 0.05 then the alternative hypothesis can be rejected, i.e. the observed difference in means for group A and group B is within the range of chance variation and is not statistically significant.
 t.test(Time~Page, data=session_times, alternative="less")
+ggplot(session_times, aes(x=Page, y=Time)) + geom_col(fill="Blue3") + plt_theme_1
 
-effectSize=ES.h(p1=1.21e-2, p2=1.1e-2)
-pwr.2p.test(h=effectSize, sig.level=5e-2, power=0.5, alternative = "greater")
+# Import lung
+lung=read.csv("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/LungDisease.csv?raw=TRUE"); head(lung)
 
-head(lung)
-model.1=lm(PEFR~Exposure, data=lung); summary(model.1)
+# lm() trains a linear model on the data; predict() and residuals() give the predicted response and residuals respectively. 
+lung_model_1=lm(PEFR~Exposure, data=lung); summary(lung_model_1)
+ggplot(data=lung %>% mutate(predicted.pefr=predict(lung_model_1))) + geom_point(aes(x=Exposure, y=PEFR), size=4, color="Blue3") + plt_theme_1 + geom_line(mapping=aes(Exposure, y=predicted.pefr), size=2, color="Red3")
 
-lung %>% mutate(Predicted.PEFR=predict(model.1), Residual=residuals(model.1)) %>% head
+# Alternatively, one can use model$coefficients[[]].
+# Split the data into a train and test set.
+train_index=sample(nrow(lung), floor(0.75*nrow(lung)))
+lung_train=lung[train_index,]
+lung_test=lung[-train_index,]
+lung_model_2=lm(PEFR~Exposure, data=lung_train); summary(lung_model_2)
+lung_test %>% mutate(predicted.pefr=lung_model_2$coefficients[[1]] + lung_model_2$coefficients[[2]]*lung_test$Exposure, residual=PEFR-predicted.pefr) -> lung_test
+ggplot(data=lung_test) + plt_theme_1 + geom_point(mapping=aes(x=Exposure, y=PEFR), size=4) + geom_line(mapping = aes(x=Exposure, y=predicted.pefr), size=2)
 
-head(house)
+# Import house data
+house=read.csv("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/house_sales.csv?raw=TRUE", sep = "\t") %>% mutate(NewConstruction=ifelse(NewConstruction==TRUE, 1, 0)); View(head(house))
 
+# The formula in lm() can include multiple vectors.
 house_lm = lm(AdjSalePrice~SqFtTotLiving+SqFtLot+Bathrooms+Bedrooms+BldgGrade, data=house, na.action = na.omit); summary(house_lm)
 
+# Any vectors with p-value > 0.05 should be removed from the model.
 update(object=house_lm, .~. -SqFtLot) -> house_lm; summary(house_lm)
 
+# Train a linear model on a dataset with a greater number of predictors. When R trains a linear model on a data frame and one of the predictors is a vector of categorical data (characters or factor levels) it uses the first factor level as an intercept and the other factor levels have coefficients relative to the first level.
 house_full = lm(AdjSalePrice~SqFtTotLiving+SqFtLot+Bathrooms+Bedrooms+BldgGrade+PropertyType+NbrLivingUnits+SqFtFinBasement+YrBuilt+YrRenovated+NewConstruction, data=house, na.action = na.omit); summary(house_full)
 
-step=MASS::stepAIC(house_full, direction="both"); step
+# The Akaike information criterion is a statistical metric that penalizes adding more predictors to a model. Data scientists aim to find a model with the smallest AIC, we can do this with a process called stepwise regression. There are three ways to do stepwise regression: backward elimination is when we start with a full model and drop predictors that don't contribute; forward selection is the opposite, start with a constant model and add predictors; the third option is to both add and drop predictors to find a model with the smallest AIC. This process is done with MASS::stepAIC().
+library(MASS)
+stepModel=stepAIC(house_full, direction="both"); summary(stepModel)
 
-predictionInterval=predict(object=step, interval="prediction", level=0.95); head(predictionInterval)
-house=cbind(house, predictionInterval)
+# Compare the models
+better_model=c()
+for(i in 1:1e4){
+	house %>%
+		mutate(
+			stepModelPrediction=predict(stepModel), 
+			house_fullPrediction=predict(house_full)
+		) %>% 
+		sample_n(1) %>% 
+		mutate(
+			better=ifelse(
+				abs(AdjSalePrice-stepModelPrediction) < abs(AdjSalePrice-house_fullPrediction),
+				"stepModel", 
+				"house_full"
+			)
+		) %>% 
+		pull(better) %>% 
+		as.character() -> b
+	better_model=c(better_model,b)
+}; rm(b,i)
+table(better_model) %>% as.data.frame() %>% ggplot(aes(x=better_model, y=Freq)) + geom_col(fill="Red3") + plt_theme_1 + labs(x="", y="")
 
-house %>% mutate(Year = lubridate::year(DocumentDate), Weight=Year-2005) -> house
+# Use predict() to create a prediction interval from the model.
+predictionInterval=predict(object=stepModel, interval="prediction", level=0.95)
+head(predictionInterval)
 
-house_wt = lm(AdjSalePrice ~ SqFtTotLiving + SqFtLot + Bathrooms + Bedrooms + BldgGrade, data=house, weight=Weight); summary(house_wt)
+# Weights can be added to the linear model. A linear model with weights w finds the coefficients that will minimize sum(w*e**2), where e are the residuals.
+house %>% mutate(DocumentDate=as.Date(DocumentDate), Year = as.numeric(format(DocumentDate, "%Y")), Weight=Year-2005) -> house
+house_wt = lm(
+	AdjSalePrice ~ SqFtTotLiving + Bathrooms + Bedrooms + BldgGrade, 
+	data=house, 
+	weight=Weight
+); summary(house_wt)
 
-round(cbind(house_lm=house_lm$coefficients,house_wt=house_wt$coefficients), digits=3)
+# Compare the coefficients with and without weights.
+round(
+	cbind(
+		house_lm=house_lm$coefficients,
+		house_wt=house_wt$coefficients
+	), 
+	digits=3
+)
 
-predict(object=step, newdata=house, interval="prediction", level=0.95) %>% head
+# If a column in the data frame contains has categorical data it can be changed into multiple columns of binary data wuth the model.matrix() function. For example the values in the column PropertyType are either Multiplex, Single Family or Townhouse; this column can be "un-melted" into three columns with values either 0 or 1. In machine learning, this is known as one-hot encoding.
+prop_type_dummies=data.frame(model.matrix(~PropertyType-1, data=house)) %>% rename(Multiplex=1, Single.Family=2, Townhouse=3); head(prop_type_dummies)
 
-prop_type_dummies=model.matrix(~PropertyType-1, data=house); head(prop_type_dummies)
+# Train a new linear model using the one-hot encoding for PropertyType
+house_lm2 = lm(AdjSalePrice~SqFtTotLiving+SqFtLot+Bathrooms+Bedrooms+BldgGrade+NbrLivingUnits+SqFtFinBasement+YrBuilt+YrRenovated+NewConstruction+Townhouse+Single.Family, data=cbind(house,prop_type_dummies), na.action = na.omit); summary(house_lm2)
 
-lm(AdjSalePrice~SqFtTotLiving+SqFtLot+Bathrooms+Bedrooms+BldgGrade+PropertyType, data=house, na.action = na.omit)
+update(house_lm2, .~. -SqFtLot - NbrLivingUnits - SqFtFinBasement - YrRenovated - NewConstruction - Single.Family) -> house_lm2; summary(house_lm2)
 
-house %>% mutate(resid=residuals(house_lm)) %>% group_by(ZipCode) %>% summarize(med_resid=median(resid), cnt=n()) %>% arrange(med_resid) %>% mutate(cum_cnt=cumsum(cnt), ZipGroup=ntile(cum_cnt, 5)) -> zip_groups
+# Count the elements in a selected subset using group_by(column) %>% summarize(count=n()). Alternatively one could use mutate instead of summarize, mutate returns the original data frame with an additional column (count in this case), summarize returns a new data frame of just two columns (column and count). The values in a vector x can be put into n different buckets using ntile(x, n). These techniques can be used to group the zip codes
+house %>% mutate(resid=residuals(house_lm)) %>% group_by(ZipCode) %>% summarise(med_resid=median(resid), cnt=n()) %>% arrange(med_resid) %>% mutate(cum_cnt=cumsum(cnt), ZipGroup=ntile(cum_cnt, 5)) %>% ungroup() %>% as.data.frame() -> zip_groups; head(zip_groups)
 
 house %>% left_join(select(zip_groups, ZipCode, ZipGroup), by="ZipCode") -> house
 
-update(step, .~. + SqFtLot - SqFtFinBasement - YrBuilt + ZipGroup)
+update(step, .~. - SqFtFinBasement + ZipGroup)
 
 lm(formula = AdjSalePrice ~ SqFtTotLiving*ZipGroup + SqFtLot + Bathrooms + Bedrooms + BldgGrade + PropertyType, data = house %>% mutate(ZipGroup=factor(ZipGroup)), na.action = na.omit)
 
@@ -115,6 +159,12 @@ lm_spline=lm(AdjSalePrice ~ splines::bs(SqFtTotLiving, knots=knots, degree=3) + 
 lm_spline %>% update(.~. -Bedrooms -Bathrooms) %>% summary()
 
 mgcv::gam(AdjSalePrice~s(SqFtTotLiving) + SqFtLot + Bathrooms + Bedrooms + BldgGrade, data=house_98105) -> lm_gam; summary(lm_gam)
+
+# Import loan data
+library(readr)
+loan_data=readr::read_csv("loan_data.csv.gz"); View(sample_n(loan_data,10),"loan_data")
+loan_data=loan_data[,-1]
+loan_data$outcome=factor(loan_data$outcome)
 
 klaR::NaiveBayes(outcome ~ purpose_ + home_ + emp_len_, data=loan_data %>% subset(complete.cases(outcome))) -> naive_model
 naive_model$table
@@ -323,6 +373,10 @@ error
 
 # How does Principal Component Analysis work?
 # The idea of PCA is to reduce the number of numerical predictor variables to a smaller set of predictors, called principal components, which are a weighted linear combination of the predictors. The principal components explain most of the variability of the full set of predictors and thereby reducing the dimension of the data.
+
+sp500=data.table::fread("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/sp500_data.csv.gz?raw=TRUE") %>% as.data.frame(); View(head(sp500,10))
+
+sp500_sectors=read.csv("https://github.com/gedeck/practical-statistics-for-data-scientists/blob/master/data/sp500_sectors.csv?raw=TRUE"); View(head(sp500_sectors))
 
 oil_px <- sp500[, c('CVX', 'XOM')]
 pca <- princomp(oil_px)
